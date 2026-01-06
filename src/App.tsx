@@ -150,10 +150,10 @@ function App() {
               value={config.audio_quality} 
               onChange={(e) => setConfig({ ...config, audio_quality: e.target.value })}
             >
-              <option value="0">Mejor (0)</option>
-              <option value="1">Alta (1)</option>
-              <option value="2">Media (2)</option>
-              <option value="5">Baja (5)</option>
+              <option value="0">Máxima Calidad</option>
+              <option value="1">Alta Calidad</option>
+              <option value="2">Calidad Media</option>
+              <option value="5">Calidad Baja (menor tamaño)</option>
             </select>
           </label>
         </div>
