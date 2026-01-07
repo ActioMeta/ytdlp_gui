@@ -30,18 +30,16 @@ interface VideoDownload {
 }
 
 type UIMode = 'simple' | 'pro';
-type SimplePreset = 'video' | 'audio' | 'podcast' | null;
 
 function App() {
-  const [uiMode, setUiMode] = useState<UIMode>((localStorage.getItem('uiMode') as UIMode) || 'simple');
-  const [selectedPreset, setSelectedPreset] = useState<SimplePreset>((localStorage.getItem('selectedPreset') as SimplePreset) || null);
+  const [uiMode, setUiMode] = useState<UIMode>('simple');
   const [urls, setUrls] = useState<string>("");
   const [config, setConfig] = useState<DownloadConfig>({
     audio_quality: "0",
     subtitles: false,
     subtitle_lang: "es",
     title_format: "date-original",
-    output_path: localStorage.getItem('lastOutputPath') || "",
+    output_path: "",
     rate_limit: "5M",
     sleep_interval: 3,
     cookies_browser: "none",
@@ -58,14 +56,10 @@ function App() {
   });
   const [downloads, setDownloads] = useState<VideoDownload[]>([]);
   const [ytdlpInfo, setYtdlpInfo] = useState<string>("");
-  const [ffmpegInfo, setFfmpegInfo] = useState<string>("");
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
-  const [videoInfo, setVideoInfo] = useState<string>("");
-  const [loadingInfo, setLoadingInfo] = useState<boolean>(false);
 
   useEffect(() => {
-    checkYtdlp();
-    checkFfmpeg();
+    checkYt  dlp();
   }, []);
 
   async function checkYtdlp() {
@@ -81,45 +75,10 @@ function App() {
     }
   }
 
-  async function checkFfmpeg() {
-    try {
-      const info = await invoke<string>("check_ffmpeg");
-      setFfmpegInfo(info);
-    } catch (error) {
-      console.error("FFmpeg not found:", error);
-      setFfmpegInfo("");
-    }
-  }
-
-  async function getVideoInfo() {
-    if (!urls.trim()) {
-      alert("Por favor, ingresa una URL primero");
-      return;
-    }
-
-    const firstUrl = urls.split('\n')[0].trim();
-    setLoadingInfo(true);
-    setVideoInfo("");
-
-    try {
-      const info = await invoke<string>("get_video_info", { 
-        url: firstUrl, 
-        usePython: config.use_python 
-      });
-      setVideoInfo(info);
-    } catch (error) {
-      setVideoInfo(`Error: ${String(error)}`);
-    } finally {
-      setLoadingInfo(false);
-    }
-  }
-
   async function selectFolder() {
     try {
       const folder = await invoke<string>("select_folder");
       setConfig({ ...config, output_path: folder });
-      // Guardar la última ruta en localStorage
-      localStorage.setItem('lastOutputPath', folder);
     } catch (error) {
       console.error("Error selecting folder:", error);
     }
@@ -174,22 +133,8 @@ function App() {
           idx === i ? { ...d, status: 'completed', message: result } : d
         ));
       } catch (error) {
-        let errorMsg = String(error);
-        
-        // Detectar error de FFmpeg y dar mensaje más claro
-        if (errorMsg.includes('ffprobe') || errorMsg.includes('Postprocessing')) {
-          if (errorMsg.includes('no tiene audio')) {
-            // No es realmente un error, el video se descargó
-            setDownloads(prev => prev.map((d, idx) => 
-              idx === i ? { ...d, status: 'completed', message: errorMsg } : d
-            ));
-            continue;
-          }
-          errorMsg = 'Error: FFmpeg no funciona correctamente. Verifica la instalación con: ffmpeg -version';
-        }
-        
         setDownloads(prev => prev.map((d, idx) => 
-          idx === i ? { ...d, status: 'error', message: errorMsg } : d
+          idx === i ? { ...d, status: 'error', message: String(error) } : d
         ));
       }
     }
@@ -198,13 +143,6 @@ function App() {
   }
 
   function applySimplePreset(preset: 'video' | 'audio' | 'podcast') {
-    setSelectedPreset(preset);
-    
-    // Advertir si no hay FFmpeg y se selecciona audio
-    if ((preset === 'audio' || preset === 'podcast') && !ffmpegInfo) {
-      console.warn('FFmpeg no detectado. La extracción de audio puede fallar.');
-    }
-    
     switch (preset) {
       case 'video':
         setConfig(prev => ({
@@ -214,7 +152,7 @@ function App() {
           subtitle_lang: 'es',
           sponsorblock: true,
           embed_metadata: true,
-          cookies_browser: 'none', // Sin cookies en modo simple
+          cookies_browser: 'chrome',
         }));
         break;
       case 'audio':
@@ -226,7 +164,6 @@ function App() {
           subtitles: false,
           embed_metadata: true,
           embed_thumbnail: true,
-          cookies_browser: 'none', // Sin cookies en modo simple
         }));
         break;
       case 'podcast':
@@ -238,7 +175,6 @@ function App() {
           subtitles: false,
           sponsorblock: true,
           max_filesize: '500M',
-          cookies_browser: 'none', // Sin cookies en modo simple
         }));
         break;
     }
@@ -261,120 +197,65 @@ function App() {
     );
   }
 
-  // Advertencia de FFmpeg si falta
-  const showFFmpegWarning = !ffmpegInfo && (
-    uiMode === 'simple' 
-      ? (selectedPreset === 'audio' || selectedPreset === 'podcast')
-      : config.extract_audio
-  );
-
   return (
     <main className="container">
       <header className="app-header">
         <div className="header-left">
           <h1>yt-dlp GUI</h1>
-          <span className="version-badge">by: ActioMeta</span>
+          <span className="version-badge">{ytdlpInfo}</span>
         </div>
         <div className="mode-toggle">
           <button 
             className={`mode-btn ${uiMode === 'simple' ? 'active' : ''}`}
-            onClick={() => {
-              setUiMode('simple');
-              localStorage.setItem('uiMode', 'simple');
-            }}
+            onClick={() => setUiMode('simple')}
           >Simple</button>
           <button 
             className={`mode-btn ${uiMode === 'pro' ? 'active' : ''}`}
-            onClick={() => {
-              setUiMode('pro');
-              localStorage.setItem('uiMode', 'pro');
-            }}
+            onClick={() => setUiMode('pro')}
           >Pro</button>
         </div>
       </header>
 
       {uiMode === 'simple' && (
         <div className="simple-mode">
-          <div className="simple-left">
-            <div className="preset-selector">
-              <h3>Tipo de descarga</h3>
-              {!ffmpegInfo && (
-                <div className="ffmpeg-warning">
-                  <span>⚠</span> FFmpeg no detectado. Los presets de audio pueden fallar.
-                </div>
-              )}
-              <div className="preset-buttons">
-                <button 
-                  className={`preset-btn ${selectedPreset === 'video' ? 'active' : ''}`}
-                  onClick={() => applySimplePreset('video')}
-                >
-                  <h4>Video</h4>
-                  <p>Con subtítulos, sin anuncios</p>
-                </button>
-                <button 
-                  className={`preset-btn ${selectedPreset === 'audio' ? 'active' : ''} ${!ffmpegInfo ? 'needs-ffmpeg' : ''}`}
-                  onClick={() => applySimplePreset('audio')}
-                >
-                  <h4>Audio/Música</h4>
-                  <p>Alta calidad MP3 {!ffmpegInfo && '(requiere FFmpeg)'}</p>
-                </button>
-                <button 
-                  className={`preset-btn ${selectedPreset === 'podcast' ? 'active' : ''} ${!ffmpegInfo ? 'needs-ffmpeg' : ''}`}
-                  onClick={() => applySimplePreset('podcast')}
-                >
-                  <h4>Podcast</h4>
-                  <p>Audio comprimido, sin anuncios {!ffmpegInfo && '(requiere FFmpeg)'}</p>
-                </button>
-              </div>
-            </div>
-
-            <div className="simple-actions">
-              <div className="control-group">
-                <label>Carpeta de descarga</label>
-                <div className="folder-selector">
-                  <input type="text" value={config.output_path} readOnly placeholder="Selecciona una carpeta..." />
-                  <button onClick={selectFolder} className="btn-secondary">...</button>
-                </div>
-              </div>
-
-              <button onClick={startDownloads} disabled={isDownloading} className="btn-primary btn-large">
-                {isDownloading ? 'Descargando...' : 'Iniciar Descarga'}
+          <div className="preset-selector">
+            <h3>¿Qué deseas descargar?</h3>
+            <div className="preset-cards">
+              <button className="preset-card" onClick={() => applySimplePreset('video')}>
+                <div className="preset-icon">Video</div>
+                <h4>Video</h4>
+                <p>Con subtítulos, sin anuncios</p>
+              </button>
+              <button className="preset-card" onClick={() => applySimplePreset('audio')}>
+                <div className="preset-icon">Audio</div>
+                <h4>Audio/Música</h4>
+                <p>Alta calidad MP3</p>
+              </button>
+              <button className="preset-card" onClick={() => applySimplePreset('podcast')}>
+                <div className="preset-icon">Podcast</div>
+                <h4>Podcast</h4>
+                <p>Audio comprimido, sin anuncios</p>
               </button>
             </div>
           </div>
 
-          <div className="simple-right">
+          <div className="simple-controls">
             <div className="control-group">
               <label>URLs (una por línea)</label>
-              <textarea 
-                value={urls} 
-                onChange={(e) => setUrls(e.target.value)} 
-                placeholder="https://www.youtube.com/watch?v=...&#10;https://www.reddit.com/r/..."
-                disabled={isDownloading} 
-              />
+              <textarea value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="https://www.youtube.com/watch?v=..." rows={5} disabled={isDownloading} />
             </div>
 
-            {downloads.length > 0 && (
-              <div className="downloads-section">
-                <h3>Descargas</h3>
-                <div className="downloads-list">
-                  {downloads.map((download, index) => (
-                    <div key={index} className={`download-item status-${download.status}`}>
-                      <div className="download-status">
-                        {download.status === 'pending' && '⋯'}
-                        {download.status === 'downloading' && '↓'}
-                        {download.status === 'completed' && '✓'}
-                        {download.status === 'error' && '✕'}
-                      </div>
-                      <div className="download-info">
-                        <div className="download-url">{download.url}</div>
-                        <div className="download-message">{download.message}</div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+            <div className="control-group">
+              <label>Carpeta de descarga</label>
+              <div className="folder-selector">
+                <input type="text" value={config.output_path} readOnly placeholder="Selecciona una carpeta..." />
+                <button onClick={selectFolder} className="btn-secondary">Seleccionar</button>
               </div>
-            )}
+            </div>
+
+            <button onClick={startDownloads} disabled={isDownloading} className="btn-primary btn-large">
+              {isDownloading ? 'Descargando...' : 'Iniciar Descarga'}
+            </button>
           </div>
         </div>
       )}
@@ -544,15 +425,6 @@ function App() {
           </div>
 
           <div className="config-section">
-            {showFFmpegWarning && (
-              <div className="ffmpeg-warning">
-                <span>⚠</span> FFmpeg no está instalado. La extracción de audio fallará. 
-                <a href="#" onClick={(e) => { e.preventDefault(); checkFfmpeg(); }} style={{marginLeft: '8px', color: 'inherit', textDecoration: 'underline'}}>
-                  Verificar de nuevo
-                </a>
-              </div>
-            )}
-
             <div className="control-group">
               <label>URLs (una por línea)</label>
               <textarea value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="https://www.youtube.com/watch?v=..." rows={6} disabled={isDownloading} />
@@ -566,21 +438,31 @@ function App() {
               </div>
             </div>
 
-            <div style={{display: 'flex', gap: '8px', alignItems: 'flex-start'}}>
-              <button onClick={getVideoInfo} disabled={loadingInfo || !urls.trim()} className="btn-secondary" style={{flexShrink: 0}}>
-                {loadingInfo ? 'Cargando...' : 'Vista Previa'}
-              </button>
-              <button onClick={startDownloads} disabled={isDownloading} className="btn-primary btn-large" style={{flex: 1}}>
-                {isDownloading ? 'Descargando...' : 'Iniciar Descarga'}
-              </button>
-            </div>
+            <button onClick={startDownloads} disabled={isDownloading} className="btn-primary btn-large">
+              {isDownloading ? 'Descargando...' : 'Iniciar Descarga'}
+            </button>
+          </div>
+        </div>
+      )}
 
-            {videoInfo && (
-              <div className="video-info-display">
-                <h4>Información del Video</h4>
-                <pre>{videoInfo}</pre>
+      {downloads.length > 0 && (
+        <div className="downloads-section">
+          <h3>Descargas</h3>
+          <div className="downloads-list">
+            {downloads.map((download, index) => (
+              <div key={index} className={`download-item status-${download.status}`}>
+                <div className="download-status">
+                  {download.status === 'pending' && '⏳'}
+                  {download.status === 'downloading' && '⬇️'}
+                  {download.status === 'completed' && '✅'}
+                  {download.status === 'error' && '❌'}
+                </div>
+                <div className="download-info">
+                  <div className="download-url">{download.url}</div>
+                  <div className="download-message">{download.message}</div>
+                </div>
               </div>
-            )}
+            ))}
           </div>
         </div>
       )}
