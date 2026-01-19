@@ -59,7 +59,7 @@ function App() {
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
 
   useEffect(() => {
-    checkYt  dlp();
+    checkYtdlp();
   }, []);
 
   async function checkYtdlp() {

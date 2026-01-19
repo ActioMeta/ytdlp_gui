@@ -30,7 +30,6 @@ interface VideoDownload {
   message: string;
 }
 
-type UIMode = 'simple' | 'pro';
 
 function App() {
   const [urls, setUrls] = useState<string>("");
@@ -42,6 +41,17 @@ function App() {
     output_path: "",
     rate_limit: "5M", // Cambiado: antes "unlimited", ahora 5MB/s por defecto
     sleep_interval: 3, // Cambiado: antes 0, ahora 3 segundos por defecto
+    cookies_browser: "none",
+    sponsorblock: false,
+    extract_audio: false,
+    audio_format: "mp3",
+    geo_bypass: false,
+    max_filesize: "unlimited",
+    embed_metadata: false,
+    embed_thumbnail: false,
+    all_subtitles: false,
+    playlist_items: "single",
+    use_python: false,
   });
   const [downloads, setDownloads] = useState<VideoDownload[]>([]);
   const [ytdlpInstalled, setYtdlpInstalled] = useState<boolean>(false);
