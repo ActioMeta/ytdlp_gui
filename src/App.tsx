@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import { downloadDir, join } from "@tauri-apps/api/path";
+import { Clapperboard, Music, Mic, Clock, Download, CheckCircle, AlertCircle } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import "./App.css";
 
@@ -30,18 +32,17 @@ interface VideoDownload {
 }
 
 type UIMode = 'simple' | 'pro';
-type SimplePreset = 'video' | 'audio' | 'podcast' | null;
 
 function App() {
-  const [uiMode, setUiMode] = useState<UIMode>((localStorage.getItem('uiMode') as UIMode) || 'simple');
-  const [selectedPreset, setSelectedPreset] = useState<SimplePreset>((localStorage.getItem('selectedPreset') as SimplePreset) || null);
+  const [uiMode, setUiMode] = useState<UIMode>('simple');
+  const [activePreset, setActivePreset] = useState<'video' | 'audio' | 'podcast' | null>(null);
   const [urls, setUrls] = useState<string>("");
   const [config, setConfig] = useState<DownloadConfig>({
     audio_quality: "0",
     subtitles: false,
     subtitle_lang: "es",
     title_format: "date-original",
-    output_path: localStorage.getItem('lastOutputPath') || "",
+    output_path: "",
     rate_limit: "5M",
     sleep_interval: 3,
     cookies_browser: "none",
@@ -58,15 +59,25 @@ function App() {
   });
   const [downloads, setDownloads] = useState<VideoDownload[]>([]);
   const [ytdlpInfo, setYtdlpInfo] = useState<string>("");
-  const [ffmpegInfo, setFfmpegInfo] = useState<string>("");
   const [isDownloading, setIsDownloading] = useState<boolean>(false);
-  const [videoInfo, setVideoInfo] = useState<string>("");
-  const [loadingInfo, setLoadingInfo] = useState<boolean>(false);
 
   useEffect(() => {
     checkYtdlp();
-    checkFfmpeg();
+    setupDefaultPath();
   }, []);
+  async function setupDefaultPath() {
+    try {
+      const baseDir = await downloadDir();
+
+      const defaultPath = await join(baseDir, 'oxidetube');
+      setConfig(prev => ({
+        ...prev,
+        output_path: prev.output_path || defaultPath
+      }));
+    } catch (error) {
+      console.error("Error al obtener directorio de descargas:", error);
+    }
+  }
 
   async function checkYtdlp() {
     try {
@@ -81,45 +92,10 @@ function App() {
     }
   }
 
-  async function checkFfmpeg() {
-    try {
-      const info = await invoke<string>("check_ffmpeg");
-      setFfmpegInfo(info);
-    } catch (error) {
-      console.error("FFmpeg not found:", error);
-      setFfmpegInfo("");
-    }
-  }
-
-  async function getVideoInfo() {
-    if (!urls.trim()) {
-      alert("Por favor, ingresa una URL primero");
-      return;
-    }
-
-    const firstUrl = urls.split('\n')[0].trim();
-    setLoadingInfo(true);
-    setVideoInfo("");
-
-    try {
-      const info = await invoke<string>("get_video_info", { 
-        url: firstUrl, 
-        usePython: config.use_python 
-      });
-      setVideoInfo(info);
-    } catch (error) {
-      setVideoInfo(`Error: ${String(error)}`);
-    } finally {
-      setLoadingInfo(false);
-    }
-  }
-
   async function selectFolder() {
     try {
       const folder = await invoke<string>("select_folder");
       setConfig({ ...config, output_path: folder });
-      // Guardar la última ruta en localStorage
-      localStorage.setItem('lastOutputPath', folder);
     } catch (error) {
       console.error("Error selecting folder:", error);
     }
@@ -151,45 +127,31 @@ function App() {
 
     for (let i = 0; i < urlList.length; i++) {
       const url = urlList[i];
-      
+
       if (i > 0 && config.sleep_interval > 0) {
-        setDownloads(prev => prev.map((d, idx) => 
-          idx === i ? { 
-            ...d, 
-            status: 'pending', 
-            message: `Esperando ${config.sleep_interval}s...` 
+        setDownloads(prev => prev.map((d, idx) =>
+          idx === i ? {
+            ...d,
+            status: 'pending',
+            message: `Esperando ${config.sleep_interval}s...`
           } : d
         ));
-        
+
         await new Promise(resolve => setTimeout(resolve, config.sleep_interval * 1000));
       }
-      
-      setDownloads(prev => prev.map((d, idx) => 
+
+      setDownloads(prev => prev.map((d, idx) =>
         idx === i ? { ...d, status: 'downloading', message: 'Descargando...' } : d
       ));
 
       try {
         const result = await invoke<string>("download_video", { url, config });
-        setDownloads(prev => prev.map((d, idx) => 
+        setDownloads(prev => prev.map((d, idx) =>
           idx === i ? { ...d, status: 'completed', message: result } : d
         ));
       } catch (error) {
-        let errorMsg = String(error);
-        
-        // Detectar error de FFmpeg y dar mensaje más claro
-        if (errorMsg.includes('ffprobe') || errorMsg.includes('Postprocessing')) {
-          if (errorMsg.includes('no tiene audio')) {
-            // No es realmente un error, el video se descargó
-            setDownloads(prev => prev.map((d, idx) => 
-              idx === i ? { ...d, status: 'completed', message: errorMsg } : d
-            ));
-            continue;
-          }
-          errorMsg = 'Error: FFmpeg no funciona correctamente. Verifica la instalación con: ffmpeg -version';
-        }
-        
-        setDownloads(prev => prev.map((d, idx) => 
-          idx === i ? { ...d, status: 'error', message: errorMsg } : d
+        setDownloads(prev => prev.map((d, idx) =>
+          idx === i ? { ...d, status: 'error', message: String(error) } : d
         ));
       }
     }
@@ -198,13 +160,7 @@ function App() {
   }
 
   function applySimplePreset(preset: 'video' | 'audio' | 'podcast') {
-    setSelectedPreset(preset);
-    
-    // Advertir si no hay FFmpeg y se selecciona audio
-    if ((preset === 'audio' || preset === 'podcast') && !ffmpegInfo) {
-      console.warn('FFmpeg no detectado. La extracción de audio puede fallar.');
-    }
-    
+    setActivePreset(preset);
     switch (preset) {
       case 'video':
         setConfig(prev => ({
@@ -214,7 +170,7 @@ function App() {
           subtitle_lang: 'es',
           sponsorblock: true,
           embed_metadata: true,
-          cookies_browser: 'none', // Sin cookies en modo simple
+          cookies_browser: 'none',
         }));
         break;
       case 'audio':
@@ -226,7 +182,6 @@ function App() {
           subtitles: false,
           embed_metadata: true,
           embed_thumbnail: true,
-          cookies_browser: 'none', // Sin cookies en modo simple
         }));
         break;
       case 'podcast':
@@ -238,7 +193,6 @@ function App() {
           subtitles: false,
           sponsorblock: true,
           max_filesize: '500M',
-          cookies_browser: 'none', // Sin cookies en modo simple
         }));
         break;
     }
@@ -261,98 +215,64 @@ function App() {
     );
   }
 
-  // Advertencia de FFmpeg si falta
-  const showFFmpegWarning = !ffmpegInfo && (
-    uiMode === 'simple' 
-      ? (selectedPreset === 'audio' || selectedPreset === 'podcast')
-      : config.extract_audio
-  );
-
   return (
     <main className="container">
       <header className="app-header">
         <div className="header-left">
-          <h1>yt-dlp GUI</h1>
-          <span className="version-badge">by: ActioMeta</span>
+          <h1>OxideTube</h1>
         </div>
         <div className="mode-toggle">
-          <button 
+          <button
             className={`mode-btn ${uiMode === 'simple' ? 'active' : ''}`}
-            onClick={() => {
-              setUiMode('simple');
-              localStorage.setItem('uiMode', 'simple');
-            }}
+            onClick={() => setUiMode('simple')}
           >Simple</button>
-          <button 
+          <button
             className={`mode-btn ${uiMode === 'pro' ? 'active' : ''}`}
-            onClick={() => {
-              setUiMode('pro');
-              localStorage.setItem('uiMode', 'pro');
-            }}
+            onClick={() => setUiMode('pro')}
           >Pro</button>
         </div>
       </header>
 
       {uiMode === 'simple' && (
         <div className="simple-mode">
-          <div className="simple-left">
-            <div className="preset-selector">
-              <h3>Tipo de descarga</h3>
-              {!ffmpegInfo && (
-                <div className="ffmpeg-warning">
-                  <span>⚠</span> FFmpeg no detectado. Los presets de audio pueden fallar.
-                </div>
-              )}
-              <div className="preset-buttons">
-                <button 
-                  className={`preset-btn ${selectedPreset === 'video' ? 'active' : ''}`}
-                  onClick={() => applySimplePreset('video')}
-                >
-                  <h4>Video</h4>
-                  <p>Con subtítulos, sin anuncios</p>
-                </button>
-                <button 
-                  className={`preset-btn ${selectedPreset === 'audio' ? 'active' : ''} ${!ffmpegInfo ? 'needs-ffmpeg' : ''}`}
-                  onClick={() => applySimplePreset('audio')}
-                >
-                  <h4>Audio/Música</h4>
-                  <p>Alta calidad MP3 {!ffmpegInfo && '(requiere FFmpeg)'}</p>
-                </button>
-                <button 
-                  className={`preset-btn ${selectedPreset === 'podcast' ? 'active' : ''} ${!ffmpegInfo ? 'needs-ffmpeg' : ''}`}
-                  onClick={() => applySimplePreset('podcast')}
-                >
-                  <h4>Podcast</h4>
-                  <p>Audio comprimido, sin anuncios {!ffmpegInfo && '(requiere FFmpeg)'}</p>
-                </button>
-              </div>
-            </div>
-
-            <div className="simple-actions">
-              <div className="control-group">
-                <label>Carpeta de descarga</label>
-                <div className="folder-selector">
-                  <input type="text" value={config.output_path} readOnly placeholder="Selecciona una carpeta..." />
-                  <button onClick={selectFolder} className="btn-secondary">...</button>
-                </div>
-              </div>
-
-              <button onClick={startDownloads} disabled={isDownloading} className="btn-primary btn-large">
-                {isDownloading ? 'Descargando...' : 'Iniciar Descarga'}
+          <div className="preset-selector">
+            <h3>¿Qué deseas descargar?</h3>
+            <div className="preset-cards">
+              <button className={`preset-card ${activePreset === 'video' ? 'active' : ''}`} onClick={() => applySimplePreset('video')}>
+                <div className="preset-icon"><Clapperboard size={32} /></div>
+                <h4>Video</h4>
+                <p>Con subtítulos, sin anuncios</p>
+              </button>
+              <button className={`preset-card ${activePreset === 'audio' ? 'active' : ''}`} onClick={() => applySimplePreset('audio')}>
+                <div className="preset-icon"><Music size={32} /></div>
+                <h4>Audio/Música</h4>
+                <p>Alta calidad MP3</p>
+              </button>
+              <button className={`preset-card ${activePreset === 'podcast' ? 'active' : ''}`} onClick={() => applySimplePreset('podcast')}>
+                <div className="preset-icon"><Mic size={32} /></div>
+                <h4>Podcast</h4>
+                <p>Audio comprimido, sin anuncios</p>
               </button>
             </div>
           </div>
 
-          <div className="simple-right">
+          <div className="simple-controls">
             <div className="control-group">
               <label>URLs (una por línea)</label>
-              <textarea 
-                value={urls} 
-                onChange={(e) => setUrls(e.target.value)} 
-                placeholder="https://www.youtube.com/watch?v=...&#10;https://www.reddit.com/r/..."
-                disabled={isDownloading} 
-              />
+              <textarea value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="https://www.youtube.com/watch?v=..." rows={5} disabled={isDownloading} />
             </div>
+
+            <div className="control-group">
+              <label>Carpeta de descarga</label>
+              <div className="folder-selector">
+                <input type="text" value={config.output_path} readOnly placeholder="Selecciona una carpeta..." />
+                <button onClick={selectFolder} className="btn-secondary">Seleccionar</button>
+              </div>
+            </div>
+
+            <button onClick={startDownloads} disabled={isDownloading} className="btn-primary btn-large">
+              {isDownloading ? 'Descargando...' : 'Iniciar Descarga'}
+            </button>
 
             {downloads.length > 0 && (
               <div className="downloads-section">
@@ -361,10 +281,10 @@ function App() {
                   {downloads.map((download, index) => (
                     <div key={index} className={`download-item status-${download.status}`}>
                       <div className="download-status">
-                        {download.status === 'pending' && '⋯'}
-                        {download.status === 'downloading' && '↓'}
-                        {download.status === 'completed' && '✓'}
-                        {download.status === 'error' && '✕'}
+                        {download.status === 'pending' && <Clock size={20} />}
+                        {download.status === 'downloading' && <Download size={20} className="animate-spin" />}
+                        {download.status === 'completed' && <CheckCircle size={20} />}
+                        {download.status === 'error' && <AlertCircle size={20} />}
                       </div>
                       <div className="download-info">
                         <div className="download-url">{download.url}</div>
@@ -386,7 +306,7 @@ function App() {
             <div className="config-grid">
               <div className="control-group">
                 <label>Formato</label>
-                <select value={config.extract_audio ? 'audio' : 'video'} onChange={(e) => setConfig({...config, extract_audio: e.target.value === 'audio'})}>
+                <select value={config.extract_audio ? 'audio' : 'video'} onChange={(e) => setConfig({ ...config, extract_audio: e.target.value === 'audio' })}>
                   <option value="video">Video</option>
                   <option value="audio">Solo Audio</option>
                 </select>
@@ -395,7 +315,7 @@ function App() {
               {config.extract_audio && (
                 <div className="control-group">
                   <label>Formato Audio</label>
-                  <select value={config.audio_format} onChange={(e) => setConfig({...config, audio_format: e.target.value})}>
+                  <select value={config.audio_format} onChange={(e) => setConfig({ ...config, audio_format: e.target.value })}>
                     <option value="mp3">MP3</option>
                     <option value="m4a">M4A</option>
                     <option value="opus">OPUS</option>
@@ -407,7 +327,7 @@ function App() {
 
               <div className="control-group">
                 <label>Calidad Audio</label>
-                <select value={config.audio_quality} onChange={(e) => setConfig({...config, audio_quality: e.target.value})}>
+                <select value={config.audio_quality} onChange={(e) => setConfig({ ...config, audio_quality: e.target.value })}>
                   <option value="0">Mejor (0)</option>
                   <option value="2">Alta (2)</option>
                   <option value="5">Media (5)</option>
@@ -417,7 +337,7 @@ function App() {
 
               <div className="control-group">
                 <label>Formato Título</label>
-                <select value={config.title_format} onChange={(e) => setConfig({...config, title_format: e.target.value})}>
+                <select value={config.title_format} onChange={(e) => setConfig({ ...config, title_format: e.target.value })}>
                   <option value="date-original">Fecha - Nombre</option>
                   <option value="original">Solo Nombre</option>
                 </select>
@@ -425,7 +345,7 @@ function App() {
 
               <div className="control-group">
                 <label>Límite Velocidad</label>
-                <select value={config.rate_limit} onChange={(e) => setConfig({...config, rate_limit: e.target.value})}>
+                <select value={config.rate_limit} onChange={(e) => setConfig({ ...config, rate_limit: e.target.value })}>
                   <option value="unlimited">Sin límite</option>
                   <option value="5M">5 MB/s</option>
                   <option value="2M">2 MB/s</option>
@@ -436,7 +356,7 @@ function App() {
 
               <div className="control-group">
                 <label>Pausa entre Videos (seg)</label>
-                <select value={config.sleep_interval} onChange={(e) => setConfig({...config, sleep_interval: Number(e.target.value)})}>
+                <select value={config.sleep_interval} onChange={(e) => setConfig({ ...config, sleep_interval: Number(e.target.value) })}>
                   <option value="0">Sin pausa</option>
                   <option value="3">3 segundos</option>
                   <option value="5">5 segundos</option>
@@ -447,7 +367,7 @@ function App() {
 
               <div className="control-group">
                 <label>Tamaño Máximo</label>
-                <select value={config.max_filesize} onChange={(e) => setConfig({...config, max_filesize: e.target.value})}>
+                <select value={config.max_filesize} onChange={(e) => setConfig({ ...config, max_filesize: e.target.value })}>
                   <option value="unlimited">Sin límite</option>
                   <option value="100M">100 MB</option>
                   <option value="500M">500 MB</option>
@@ -458,7 +378,7 @@ function App() {
 
               <div className="control-group">
                 <label>Cookies Navegador</label>
-                <select value={config.cookies_browser} onChange={(e) => setConfig({...config, cookies_browser: e.target.value})}>
+                <select value={config.cookies_browser} onChange={(e) => setConfig({ ...config, cookies_browser: e.target.value })}>
                   <option value="none">No usar</option>
                   <option value="chrome">Chrome</option>
                   <option value="firefox">Firefox</option>
@@ -476,7 +396,7 @@ function App() {
             <div className="config-grid">
               <div className="control-group checkbox-group">
                 <label>
-                  <input type="checkbox" checked={config.subtitles} onChange={(e) => setConfig({...config, subtitles: e.target.checked})} />
+                  <input type="checkbox" checked={config.subtitles} onChange={(e) => setConfig({ ...config, subtitles: e.target.checked })} />
                   Descargar Subtítulos
                 </label>
               </div>
@@ -485,7 +405,7 @@ function App() {
                 <>
                   <div className="control-group checkbox-group">
                     <label>
-                      <input type="checkbox" checked={config.all_subtitles} onChange={(e) => setConfig({...config, all_subtitles: e.target.checked})} />
+                      <input type="checkbox" checked={config.all_subtitles} onChange={(e) => setConfig({ ...config, all_subtitles: e.target.checked })} />
                       Todos los idiomas
                     </label>
                   </div>
@@ -493,7 +413,7 @@ function App() {
                   {!config.all_subtitles && (
                     <div className="control-group">
                       <label>Idioma</label>
-                      <select value={config.subtitle_lang} onChange={(e) => setConfig({...config, subtitle_lang: e.target.value})}>
+                      <select value={config.subtitle_lang} onChange={(e) => setConfig({ ...config, subtitle_lang: e.target.value })}>
                         <option value="es">Español</option>
                         <option value="en">Inglés</option>
                         <option value="fr">Francés</option>
@@ -512,28 +432,28 @@ function App() {
             <h3>Opciones Avanzadas</h3>
             <div className="config-grid">
               <div className="control-group checkbox-group">
-                <label><input type="checkbox" checked={config.sponsorblock} onChange={(e) => setConfig({...config, sponsorblock: e.target.checked})} /> Remover anuncios integrados (SponsorBlock)</label>
+                <label><input type="checkbox" checked={config.sponsorblock} onChange={(e) => setConfig({ ...config, sponsorblock: e.target.checked })} /> Remover anuncios integrados (SponsorBlock)</label>
               </div>
 
               <div className="control-group checkbox-group">
-                <label><input type="checkbox" checked={config.geo_bypass} onChange={(e) => setConfig({...config, geo_bypass: e.target.checked})} /> Bypass restricción geográfica</label>
+                <label><input type="checkbox" checked={config.geo_bypass} onChange={(e) => setConfig({ ...config, geo_bypass: e.target.checked })} /> Bypass restricción geográfica</label>
               </div>
 
               <div className="control-group checkbox-group">
-                <label><input type="checkbox" checked={config.embed_metadata} onChange={(e) => setConfig({...config, embed_metadata: e.target.checked})} /> Incluir metadata en archivo</label>
+                <label><input type="checkbox" checked={config.embed_metadata} onChange={(e) => setConfig({ ...config, embed_metadata: e.target.checked })} /> Incluir metadata en archivo</label>
               </div>
 
               <div className="control-group checkbox-group">
-                <label><input type="checkbox" checked={config.embed_thumbnail} onChange={(e) => setConfig({...config, embed_thumbnail: e.target.checked})} /> Incluir thumbnail en archivo</label>
+                <label><input type="checkbox" checked={config.embed_thumbnail} onChange={(e) => setConfig({ ...config, embed_thumbnail: e.target.checked })} /> Incluir thumbnail en archivo</label>
               </div>
 
               <div className="control-group checkbox-group">
-                <label><input type="checkbox" checked={config.use_python} onChange={(e) => setConfig({...config, use_python: e.target.checked})} /> Forzar uso de Python</label>
+                <label><input type="checkbox" checked={config.use_python} onChange={(e) => setConfig({ ...config, use_python: e.target.checked })} /> Forzar uso de Python</label>
               </div>
 
               <div className="control-group">
                 <label>Playlist</label>
-                <select value={config.playlist_items} onChange={(e) => setConfig({...config, playlist_items: e.target.value})}>
+                <select value={config.playlist_items} onChange={(e) => setConfig({ ...config, playlist_items: e.target.value })}>
                   <option value="single">Solo video individual</option>
                   <option value="all">Toda la playlist</option>
                   <option value="1-5">Primeros 5 videos</option>
@@ -544,15 +464,6 @@ function App() {
           </div>
 
           <div className="config-section">
-            {showFFmpegWarning && (
-              <div className="ffmpeg-warning">
-                <span>⚠</span> FFmpeg no está instalado. La extracción de audio fallará. 
-                <a href="#" onClick={(e) => { e.preventDefault(); checkFfmpeg(); }} style={{marginLeft: '8px', color: 'inherit', textDecoration: 'underline'}}>
-                  Verificar de nuevo
-                </a>
-              </div>
-            )}
-
             <div className="control-group">
               <label>URLs (una por línea)</label>
               <textarea value={urls} onChange={(e) => setUrls(e.target.value)} placeholder="https://www.youtube.com/watch?v=..." rows={6} disabled={isDownloading} />
@@ -566,24 +477,14 @@ function App() {
               </div>
             </div>
 
-            <div style={{display: 'flex', gap: '8px', alignItems: 'flex-start'}}>
-              <button onClick={getVideoInfo} disabled={loadingInfo || !urls.trim()} className="btn-secondary" style={{flexShrink: 0}}>
-                {loadingInfo ? 'Cargando...' : 'Vista Previa'}
-              </button>
-              <button onClick={startDownloads} disabled={isDownloading} className="btn-primary btn-large" style={{flex: 1}}>
-                {isDownloading ? 'Descargando...' : 'Iniciar Descarga'}
-              </button>
-            </div>
-
-            {videoInfo && (
-              <div className="video-info-display">
-                <h4>Información del Video</h4>
-                <pre>{videoInfo}</pre>
-              </div>
-            )}
+            <button onClick={startDownloads} disabled={isDownloading} className="btn-primary btn-large">
+              {isDownloading ? 'Descargando...' : 'Iniciar Descarga'}
+            </button>
           </div>
         </div>
       )}
+
+
     </main>
   );
 }
